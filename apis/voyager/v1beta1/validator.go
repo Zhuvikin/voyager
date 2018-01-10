@@ -185,44 +185,65 @@ func (r Ingress) IsValid(cloudProvider string) error {
 				}
 			}
 		} else if rule.TCP != nil && rule.HTTP == nil {
+			var err error
+			var podPort, nodePort int
+
+			if podPort, err = checkRequiredPort(rule.TCP.Port); err != nil {
+				return fmt.Errorf("spec.rule[%d].tcp.port %s is invalid. Reason: %s", ri, rule.TCP.Port, err)
+			}
+			if nodePort, err = checkOptionalPort(rule.TCP.NodePort); err != nil {
+				return fmt.Errorf("spec.rule[%d].tcp.nodePort %s is invalid. Reason: %s", ri, rule.TCP.NodePort, err)
+			} else if nodePort > 0 {
+				if r.LBType() == LBTypeHostPort {
+					return fmt.Errorf("spec.rule[%d].tcp.nodePort %s may not be specified when `LBType` is `HostPort`", ri, rule.TCP.NodePort)
+				}
+			}
+			bindAddress, err := checkOptionalAddress(rule.TCP.Address)
+			if err != nil {
+				return fmt.Errorf("spec.rule[%d].tcp.address %s is invalid. Reason: %s", ri, rule.TCP.Address, err)
+			} else if err = checkExclusiveWildcard(bindAddress, podPort, addrs); err != nil {
+				return fmt.Errorf("spec.rule[%d].tcp.address %s is invalid. Reason: %s", ri, rule.TCP.Address, err)
+			}
+
 			var a *address
+			var addrKey = fmt.Sprintf("%s:%d", bindAddress, podPort)
 
-			if podPort, err := checkRequiredPort(rule.TCP.Port); err != nil {
-				return errors.Errorf("spec.rule[%d].tcp.port %s is invalid. Reason: %s", ri, rule.TCP.Port, err)
+			if ea, found := addrs[addrKey]; found {
+				if ea.Protocol != "tcp" {
+					return fmt.Errorf("spec.rule[%d].tcp is reusing port %d, also used in spec.rule[%d].http", ri, ea.PodPort, ea.FirstRuleIndex)
+				}
+				if nodePort != ea.NodePort {
+					return fmt.Errorf("spec.rule[%d].tcp.nodePort %d does not match with nodePort %d", ri, ea.NodePort, ea.NodePort)
+				} else {
+					nodePorts[nodePort] = ri
+				}
+
+				_, foundTLS := r.FindTLSSecret(rule.Host)
+				useTLS := foundTLS && !rule.TCP.NoTLS
+				_, foundTLS1 := r.FindTLSSecret(r.Spec.Rules[ea.FirstRuleIndex].Host)
+				useTLS1 := foundTLS1 && !r.Spec.Rules[ea.FirstRuleIndex].TCP.NoTLS
+				if useTLS != useTLS1 {
+					return fmt.Errorf("spec.rule[%d].tcp has conflicting TLS spec with spec.rule[%d].tcp", ri, ea.FirstRuleIndex)
+				}
+				a = ea
 			} else {
-				bindAddress, err := checkOptionalAddress(rule.TCP.Address)
-				if err != nil {
-					return errors.Errorf("spec.rule[%d].tcp.address %s is invalid. Reason: %s", ri, rule.TCP.Address, err)
-				} else if err = checkExclusiveWildcard(bindAddress, podPort, addrs); err != nil {
-					return errors.Errorf("spec.rule[%d].tcp.address %s is invalid. Reason: %s", ri, rule.TCP.Address, err)
-				}
-
-				var addrKey = fmt.Sprintf("%s:%d", bindAddress, podPort)
-				if ea, found := addrs[addrKey]; found {
-					return errors.Errorf("spec.rule[%d].tcp is reusing addr %s, also used in spec.rule[%d]", ri, ea, ea.FirstRuleIndex)
-				}
 				a = &address{
 					Protocol:       "tcp",
 					Address:        bindAddress,
 					PodPort:        podPort,
 					FirstRuleIndex: ri,
-					Hosts:          map[string]Paths{rule.Host: {}},
+					Hosts:          map[string]Paths{},
+				}
+				if nodePort > 0 {
+					if ei, found := nodePorts[nodePort]; found {
+						return fmt.Errorf("spec.rule[%d].tcp is reusing nodePort %d for addr %s, also used in spec.rule[%d]", ri, nodePort, a, ei)
+					} else {
+						nodePorts[nodePort] = ri
+					}
 				}
 				addrs[addrKey] = a
 			}
-			if np, err := checkOptionalPort(rule.TCP.NodePort); err != nil {
-				return errors.Errorf("spec.rule[%d].tcp.nodePort %s is invalid. Reason: %s", ri, rule.TCP.NodePort, err)
-			} else if np > 0 {
-				if r.LBType() == LBTypeHostPort {
-					return errors.Errorf("spec.rule[%d].tcp.nodePort %s may not be specified when `LBType` is `HostPort`", ri, rule.TCP.NodePort)
-				}
-				if ei, found := nodePorts[np]; found {
-					return errors.Errorf("spec.rule[%d].tcp is reusing nodePort %d for addr %s, also used in spec.rule[%d]", ri, np, a, ei)
-				} else {
-					a.NodePort = np
-					nodePorts[np] = ri
-				}
-			}
+			a.Hosts[rule.Host] = Paths{}
 
 			if !checkBackendServiceName(rule.TCP.Backend.ServiceName) {
 				return errors.Errorf("spec.rule[%d].tcp has invalid serviceName for addr %s", ri, a)
