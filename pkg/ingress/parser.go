@@ -395,8 +395,10 @@ func (c *controller) generateConfig() error {
 		OffloadSSL bool
 		Hosts      map[string][]*hpi.HTTPPath
 	}
+
 	httpServices := make(map[hostBinder]*httpInfo)
-	tcpServices := make(map[hostBinder]*hpi.TCPService)
+	tcpServices := make(map[hostBinder][]*hpi.TCPHost)
+
 	for ri, rule := range c.Ingress.Spec.Rules {
 		if rule.HTTP != nil {
 			binder := hostBinder{Address: rule.HTTP.Address}
@@ -468,6 +470,8 @@ func (c *controller) generateConfig() error {
 			}
 			info.Hosts[rule.Host] = httpPaths
 		} else if rule.TCP != nil {
+			binder := hostBinder{Address: rule.TCP.Address, Port: rule.TCP.Port.IntValue()}
+
 			bk, err := c.serviceEndpoints(dnsResolvers, userLists, rule.TCP.Backend.ServiceName, rule.TCP.Backend.ServicePort, rule.TCP.Backend.HostNames)
 			if err != nil {
 				c.recorder.Eventf(
@@ -484,8 +488,19 @@ func (c *controller) generateConfig() error {
 					"spec.rules[%d].tcp skipped, reason: %s", ri, "endpoint not found",
 				)
 			} else {
-				fr := getFrontendRulesForPort(c.Ingress.Spec.FrontendRules, rule.TCP.Port.IntValue())
-				srv := &hpi.TCPService{
+				// fr := getFrontendRulesForPort(c.Ingress.Spec.FrontendRules, rule.TCP.Port.IntValue())
+				tcpHost := &hpi.TCPHost{
+					Host: rule.Host,
+					Backend: &hpi.Backend{
+						BackendRules:     rule.TCP.Backend.BackendRules,
+						Endpoints:        bk.Endpoints,
+						Sticky:           bk.Sticky,
+						StickyCookieName: bk.StickyCookieName,
+						StickyCookieHash: bk.StickyCookieHash,
+					},
+				}
+
+				/*srv := &hpi.TCPService{
 					SharedInfo:    si,
 					FrontendName:  getFrontendName("tcp", rule.TCP.Address, rule.TCP.Port.IntValue()),
 					Address:       rule.TCP.Address,
@@ -500,15 +515,16 @@ func (c *controller) generateConfig() error {
 						StickyCookieName: bk.StickyCookieName,
 						StickyCookieHash: bk.StickyCookieHash,
 					},
-				}
+				}*/
+
 				if rule.TCP.Backend.Name != "" {
-					srv.Backend.Name = rule.TCP.Backend.Name
+					tcpHost.Backend.Name = rule.TCP.Backend.Name
 				} else {
-					srv.Backend.Name = getBackendName(c.Ingress, rule.TCP.Backend)
-					srv.Backend.NameGenerated = true
+					tcpHost.Backend.Name = getBackendName(c.Ingress, rule.TCP.Backend)
+					tcpHost.Backend.NameGenerated = true
 				}
 
-				if globalTLS != nil {
+				/*if globalTLS != nil {
 					srv.TLSAuth = globalTLS
 				} else if fr.Auth != nil && fr.Auth.TLS != nil {
 					htls, err := c.getTLSAuth(fr.Auth.TLS)
@@ -530,8 +546,10 @@ func (c *controller) generateConfig() error {
 					} else {
 						srv.CertFile = ref.Name + ".pem" // Add file extension too
 					}
-				}
-				tcpServices[hostBinder{Address: srv.Address, Port: rule.TCP.Port.IntValue()}] = srv
+				}*/
+
+				// tcpServices[hostBinder{Address: srv.Address, Port: rule.TCP.Port.IntValue()}] = srv
+				tcpServices[binder] = append(tcpServices[binder], tcpHost)
 			}
 		}
 	}
@@ -770,8 +788,30 @@ func (c *controller) generateConfig() error {
 		td.HTTPService = append(td.HTTPService, srv)
 	}
 
-	for _, info := range tcpServices {
-		td.TCPService = append(td.TCPService, info)
+	for binder, hosts := range tcpServices {
+		fr := getFrontendRulesForPort(c.Ingress.Spec.FrontendRules, binder.Port)
+		srv := &hpi.TCPService{
+			SharedInfo:    si,
+			FrontendName:  getFrontendName("tcp", binder.Address, binder.Port),
+			Address:       binder.Address,
+			Port:          strconv.Itoa(binder.Port),
+			FrontendRules: fr.Rules,
+			Hosts:         hosts,
+		}
+
+		if globalTLS != nil {
+			srv.TLSAuth = globalTLS
+		} else if fr.Auth != nil && fr.Auth.TLS != nil {
+			htls, err := c.getTLSAuth(fr.Auth.TLS)
+			if err != nil {
+				return err
+			}
+			if htls != nil {
+				srv.TLSAuth = htls
+			}
+		}
+
+		td.TCPService = append(td.TCPService, srv)
 	}
 
 	td.DNSResolvers = make([]*api.DNSResolver, 0, len(dnsResolvers))

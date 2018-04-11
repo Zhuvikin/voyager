@@ -122,7 +122,6 @@ type TCPService struct {
 	PEMName       string
 	ALPNOptions   string
 	TLSAuth       *TLSAuth
-	SSLRedirect   bool
 	Hosts         []*TCPHost
 }
 
@@ -133,7 +132,6 @@ func (svc TCPService) sortKey() string {
 type TCPHost struct {
 	Host        string
 	Backend     *Backend
-	SSLRedirect bool
 }
 
 type Backend struct {
