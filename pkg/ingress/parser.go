@@ -235,6 +235,16 @@ func (c *controller) rewriteTarget(path string, rewriteRules []string) []string 
 	}
 }
 
+type hostBinder struct {
+	Address string
+	Port    int
+}
+type httpInfo struct {
+	NodePort   int32
+	OffloadSSL bool
+	Hosts      map[string][]*hpi.HTTPPath
+}
+
 func (c *controller) generateConfig() error {
 	if c.Ingress.SSLPassthrough() {
 		if err := c.convertRulesForSSLPassthrough(); err != nil {
@@ -386,16 +396,7 @@ func (c *controller) generateConfig() error {
 
 	td.HTTPService = make([]*hpi.HTTPService, 0)
 	td.TCPService = make([]*hpi.TCPService, 0)
-
-	type hostBinder struct {
-		Address string
-		Port    int
-	}
-	type httpInfo struct {
-		OffloadSSL bool
-		Hosts      map[string][]*hpi.HTTPPath
-	}
-
+	
 	httpServices := make(map[hostBinder]*httpInfo)
 	tcpServices := make(map[hostBinder][]*hpi.TCPHost)
 
@@ -600,141 +601,26 @@ func (c *controller) generateConfig() error {
 	if c.Ingress.SSLRedirect() {
 		// case: Port 443 is used in TCP mode, if port 80 is not used, redirect port 80 -> 443
 		for binder, info := range tcpServices {
-			if binder.Port != 443 {
+			if binder.Port != 443 || tcpBlocked80(binder.Address, tcpServices) || httpBlocked80(binder.Address, httpServices) {
 				continue
 			}
-
-			tcpBlocked80 := false
-			if binder.Address == `*` {
-				for b := range tcpServices {
-					if b.Port == 80 {
-						tcpBlocked80 = true
-					}
-				}
-			} else {
-				_, tcpBlocked80 = tcpServices[hostBinder{Address: binder.Address, Port: 80}]
-			}
-			if tcpBlocked80 {
-				break // TCP mode uses port 80, so we can't setup 80 -> 443 redirection
-			}
-
-			httpBlocked80 := false
-			if binder.Address == `*` {
-				for b := range httpServices {
-					if b.Port == 80 && b.Address != `*` {
-						httpBlocked80 = true
-					}
-				}
-			} else {
-				_, httpBlocked80 = httpServices[hostBinder{Address: `*`, Port: 80}]
-			}
-			if httpBlocked80 {
-				break // HTTP mode uses port 80, so we can't setup 80 -> 443 redirection
-			}
-
-			if !httpBlocked80 && !tcpBlocked80 {
+			for _, tcpHost := range info {
 				// create a HTTP rule for port 80 that redirects path `/` to 443
-
-				i80, i80Found := httpServices[hostBinder{Address: binder.Address, Port: 80}]
-				if !i80Found {
-					i80 = &httpInfo{
-						Hosts: map[string][]*hpi.HTTPPath{
-							info.Host: make([]*hpi.HTTPPath, 0),
-						},
-					}
-				} else {
-					if _, ok := i80.Hosts[info.Host]; !ok {
-						i80.Hosts[info.Host] = make([]*hpi.HTTPPath, 0)
-					}
-				}
-				httpPaths := i80.Hosts[info.Host]
-				redirPathExists := false
-				for _, p := range httpPaths {
-					if p.Path == "/" {
-						redirPathExists = true
-					}
-				}
-				if !redirPathExists {
-					// user has provided no manual config for the matching HTTP path, so we will inject one if
-					httpPaths = append(httpPaths, &hpi.HTTPPath{
-						Path:        "/",
-						SSLRedirect: true,
-					})
-				}
-
-				i80.Hosts[info.Host] = httpPaths
-				httpServices[hostBinder{Address: binder.Address, Port: 80}] = i80
+				addRedirectPaths(binder.Address, tcpHost.Host, []string{"/"}, httpServices)
 			}
 		}
 
 		// case: Port 443 is used in HTTP mode, if port 80 is not used, redirect port 80 -> 443
 		for binder, info := range httpServices {
-			if binder.Port != 443 {
+			if binder.Port != 443 || tcpBlocked80(binder.Address, tcpServices) || httpBlocked80(binder.Address, httpServices) {
 				continue
 			}
-			for tlsHost, tlsPaths := range info.Hosts {
-				tcpBlocked80 := false
-				if binder.Address == `*` {
-					for b := range tcpServices {
-						if b.Port == 80 {
-							tcpBlocked80 = true
-						}
-					}
-				} else {
-					_, tcpBlocked80 = tcpServices[hostBinder{Address: binder.Address, Port: 80}]
+			for httpHost, httpPaths := range info.Hosts {
+				var paths []string
+				for _, httpPath := range httpPaths {
+					paths = append(paths, httpPath.Path)
 				}
-				if tcpBlocked80 {
-					break // TCP mode uses port 80, so we can't setup 80 -> 443 redirection
-				}
-
-				httpBlocked80 := false
-				if binder.Address == `*` {
-					for b := range httpServices {
-						if b.Port == 80 && b.Address != `*` {
-							httpBlocked80 = true
-						}
-					}
-				} else {
-					_, httpBlocked80 = httpServices[hostBinder{Address: `*`, Port: 80}]
-				}
-				if httpBlocked80 {
-					break // HTTP mode uses port 80, so we can't setup 80 -> 443 redirection
-				}
-
-				if !httpBlocked80 && !tcpBlocked80 {
-					// create a HTTP rule for port 80 that redirects path `/` to 443
-
-					i80, i80Found := httpServices[hostBinder{Address: binder.Address, Port: 80}]
-					if !i80Found {
-						i80 = &httpInfo{
-							Hosts: map[string][]*hpi.HTTPPath{
-								tlsHost: make([]*hpi.HTTPPath, 0),
-							},
-						}
-					} else {
-						if _, ok := i80.Hosts[tlsHost]; !ok {
-							i80.Hosts[tlsHost] = make([]*hpi.HTTPPath, 0)
-						}
-					}
-
-					httpPaths := i80.Hosts[tlsHost]
-					httpPathMap := make(map[string]*hpi.HTTPPath)
-					for _, p := range httpPaths {
-						httpPathMap[p.Path] = p
-					}
-
-					for _, tlsPath := range tlsPaths {
-						if _, ok := httpPathMap[tlsPath.Path]; !ok {
-							httpPaths = append(httpPaths, &hpi.HTTPPath{
-								Path:        tlsPath.Path,
-								SSLRedirect: true,
-							})
-						}
-					}
-
-					i80.Hosts[tlsHost] = httpPaths
-					httpServices[hostBinder{Address: binder.Address, Port: 80}] = i80
-				}
+				addRedirectPaths(binder.Address, httpHost, paths, httpServices)
 			}
 		}
 	}
@@ -854,6 +740,70 @@ func (c *controller) generateConfig() error {
 		c.logger.Debugf("Generated haproxy.cfg for Ingress %s/%s", c.Ingress.Namespace, c.Ingress.Name)
 	}
 	return nil
+}
+
+// create a HTTP rule for port 80 that redirects tlsPaths to 443
+func addRedirectPaths(address, tlsHost string, tlsPaths []string, httpServices map[hostBinder]*httpInfo) {
+	i80, i80Found := httpServices[hostBinder{Address: address, Port: 80}]
+	if !i80Found {
+		i80 = &httpInfo{
+			Hosts: map[string][]*hpi.HTTPPath{
+				tlsHost: make([]*hpi.HTTPPath, 0),
+			},
+		}
+	} else {
+		if _, ok := i80.Hosts[tlsHost]; !ok {
+			i80.Hosts[tlsHost] = make([]*hpi.HTTPPath, 0)
+		}
+	}
+
+	httpPaths := i80.Hosts[tlsHost]
+	httpPathMap := make(map[string]*hpi.HTTPPath)
+	for _, p := range httpPaths {
+		httpPathMap[p.Path] = p
+	}
+
+	for _, tlsPath := range tlsPaths {
+		if _, ok := httpPathMap[tlsPath]; !ok {
+			httpPaths = append(httpPaths, &hpi.HTTPPath{
+				Path:        tlsPath,
+				SSLRedirect: true,
+			})
+		}
+	}
+
+	i80.Hosts[tlsHost] = httpPaths
+	httpServices[hostBinder{Address: address, Port: 80}] = i80
+}
+
+// if HTTP mode uses port 80, so we can't setup 80 -> 443 redirection
+func httpBlocked80(address string, httpServices map[hostBinder]*httpInfo) bool {
+	if address == `*` {
+		for b := range httpServices {
+			if b.Port == 80 && b.Address != `*` {
+				return true
+			}
+		}
+		return false
+	} else {
+		_, ok := httpServices[hostBinder{Address: `*`, Port: 80}]
+		return ok
+	}
+}
+
+// if TCP mode uses port 80, so we can't setup 80 -> 443 redirection
+func tcpBlocked80(address string, tcpServices map[hostBinder][]*hpi.TCPHost) bool {
+	if address == `*` {
+		for b := range tcpServices {
+			if b.Port == 80 {
+				return true
+			}
+		}
+		return false
+	} else {
+		_, ok := tcpServices[hostBinder{Address: address, Port: 80}]
+		return ok
+	}
 }
 
 func getBasicAuthUsers(userLists map[string]hpi.UserList, sec *core.Secret) ([]string, error) {
