@@ -130,8 +130,8 @@ func (svc TCPService) sortKey() string {
 }
 
 type TCPHost struct {
-	Host        string
-	Backend     *Backend
+	Host    string
+	Backend *Backend
 }
 
 type Backend struct {

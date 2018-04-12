@@ -240,9 +240,13 @@ type hostBinder struct {
 	Port    int
 }
 type httpInfo struct {
-	NodePort   int32
 	OffloadSSL bool
 	Hosts      map[string][]*hpi.HTTPPath
+}
+type tcpInfo struct {
+	CertFile    string
+	ALPNOptions string
+	Hosts       []*hpi.TCPHost
 }
 
 func (c *controller) generateConfig() error {
@@ -314,6 +318,7 @@ func (c *controller) generateConfig() error {
 			return err
 		}
 	}
+
 	var globalTLS *hpi.TLSAuth
 	if c.Ingress.AuthTLSSecret() != "" {
 		var err error
@@ -396,9 +401,9 @@ func (c *controller) generateConfig() error {
 
 	td.HTTPService = make([]*hpi.HTTPService, 0)
 	td.TCPService = make([]*hpi.TCPService, 0)
-	
+
 	httpServices := make(map[hostBinder]*httpInfo)
-	tcpServices := make(map[hostBinder][]*hpi.TCPHost)
+	tcpServices := make(map[hostBinder]*tcpInfo)
 
 	for ri, rule := range c.Ingress.Spec.Rules {
 		if rule.HTTP != nil {
@@ -473,6 +478,13 @@ func (c *controller) generateConfig() error {
 		} else if rule.TCP != nil {
 			binder := hostBinder{Address: rule.TCP.Address, Port: rule.TCP.Port.IntValue()}
 
+			info := &tcpInfo{}
+			if v, ok := tcpServices[binder]; ok {
+				info = v
+			} else {
+				tcpServices[binder] = info
+			}
+
 			bk, err := c.serviceEndpoints(dnsResolvers, userLists, rule.TCP.Backend.ServiceName, rule.TCP.Backend.ServicePort, rule.TCP.Backend.HostNames)
 			if err != nil {
 				c.recorder.Eventf(
@@ -489,7 +501,6 @@ func (c *controller) generateConfig() error {
 					"spec.rules[%d].tcp skipped, reason: %s", ri, "endpoint not found",
 				)
 			} else {
-				// fr := getFrontendRulesForPort(c.Ingress.Spec.FrontendRules, rule.TCP.Port.IntValue())
 				tcpHost := &hpi.TCPHost{
 					Host: rule.Host,
 					Backend: &hpi.Backend{
@@ -501,23 +512,6 @@ func (c *controller) generateConfig() error {
 					},
 				}
 
-				/*srv := &hpi.TCPService{
-					SharedInfo:    si,
-					FrontendName:  getFrontendName("tcp", rule.TCP.Address, rule.TCP.Port.IntValue()),
-					Address:       rule.TCP.Address,
-					Host:          rule.Host,
-					Port:          rule.TCP.Port.String(),
-					ALPNOptions:   parseALPNOptions(rule.TCP.ALPN),
-					FrontendRules: fr.Rules,
-					Backend: &hpi.Backend{
-						BackendRules:     rule.TCP.Backend.BackendRules,
-						Endpoints:        bk.Endpoints,
-						Sticky:           bk.Sticky,
-						StickyCookieName: bk.StickyCookieName,
-						StickyCookieHash: bk.StickyCookieHash,
-					},
-				}*/
-
 				if rule.TCP.Backend.Name != "" {
 					tcpHost.Backend.Name = rule.TCP.Backend.Name
 				} else {
@@ -525,52 +519,53 @@ func (c *controller) generateConfig() error {
 					tcpHost.Backend.NameGenerated = true
 				}
 
-				/*if globalTLS != nil {
-					srv.TLSAuth = globalTLS
-				} else if fr.Auth != nil && fr.Auth.TLS != nil {
-					htls, err := c.getTLSAuth(fr.Auth.TLS)
-					if err != nil {
-						return err
-					}
-
-					if htls != nil {
-						srv.TLSAuth = htls
-					}
-				}
+				info.Hosts = append(info.Hosts, tcpHost)
+				info.ALPNOptions = parseALPNOptions(rule.TCP.ALPN) // TODO merge with previous alpn options
 
 				if ref, ok := c.Ingress.FindTLSSecret(rule.Host); ok && !rule.TCP.NoTLS {
 					if ref.Kind == api.ResourceKindCertificate {
 						crd, err := c.VoyagerClient.VoyagerV1beta1().Certificates(c.Ingress.Namespace).Get(ref.Name, metav1.GetOptions{})
 						if err == nil {
-							srv.CertFile = crd.SecretName() + ".pem"
+							info.CertFile = crd.SecretName() + ".pem"
 						}
 					} else {
-						srv.CertFile = ref.Name + ".pem" // Add file extension too
+						info.CertFile = ref.Name + ".pem" // Add file extension too
 					}
-				}*/
+				}
+			}
+		}
+	}
 
-				// tcpServices[hostBinder{Address: srv.Address, Port: rule.TCP.Port.IntValue()}] = srv
-				tcpServices[binder] = append(tcpServices[binder], tcpHost)
+	if c.Ingress.SSLRedirect() {
+		// case: Port 443 is used in TCP mode, if port 80 is not used, redirect port 80 -> 443
+		for binder, info := range tcpServices {
+			if binder.Port != 443 || tcpBlocked80(binder.Address, tcpServices) || httpBlocked80(binder.Address, httpServices) {
+				continue
+			}
+			for _, tcpHost := range info.Hosts {
+				// create a HTTP rule for port 80 that redirects path `/` to 443
+				addRedirectPaths(binder.Address, tcpHost.Host, []string{"/"}, httpServices)
+			}
+		}
+
+		// case: Port 443 is used in HTTP mode, if port 80 is not used, redirect port 80 -> 443
+		for binder, info := range httpServices {
+			if binder.Port != 443 || tcpBlocked80(binder.Address, tcpServices) || httpBlocked80(binder.Address, httpServices) {
+				continue
+			}
+			for httpHost, httpPaths := range info.Hosts {
+				var paths []string
+				for _, httpPath := range httpPaths {
+					paths = append(paths, httpPath.Path)
+				}
+				addRedirectPaths(binder.Address, httpHost, paths, httpServices)
 			}
 		}
 	}
 
 	// Must be checked after `ssl-redirect` annotation is processed
-	tp80 := false
-	for binder := range httpServices {
-		if binder.Port == 80 {
-			tp80 = true
-			break
-		}
-	}
-	for binder := range tcpServices {
-		if binder.Port == 80 {
-			tp80 = true
-			break
-		}
-	}
 	if len(httpServices) == 0 && // No HTTP rule used
-		!tp80 && // Port 80 is not used in either HTTP or TCP mode
+		!tcpBlocked80(`*`, tcpServices) && // Port 80 is not used in TCP mode
 		td.DefaultBackend != nil { // Default backend is provided
 		httpServices[hostBinder{Address: `*`, Port: 80}] = &httpInfo{
 			Hosts: map[string][]*hpi.HTTPPath{
@@ -594,33 +589,6 @@ func (c *controller) generateConfig() error {
 					httpPaths[i].SSLRedirect = true
 				}
 				info.Hosts[httpHost] = httpPaths
-			}
-		}
-	}
-
-	if c.Ingress.SSLRedirect() {
-		// case: Port 443 is used in TCP mode, if port 80 is not used, redirect port 80 -> 443
-		for binder, info := range tcpServices {
-			if binder.Port != 443 || tcpBlocked80(binder.Address, tcpServices) || httpBlocked80(binder.Address, httpServices) {
-				continue
-			}
-			for _, tcpHost := range info {
-				// create a HTTP rule for port 80 that redirects path `/` to 443
-				addRedirectPaths(binder.Address, tcpHost.Host, []string{"/"}, httpServices)
-			}
-		}
-
-		// case: Port 443 is used in HTTP mode, if port 80 is not used, redirect port 80 -> 443
-		for binder, info := range httpServices {
-			if binder.Port != 443 || tcpBlocked80(binder.Address, tcpServices) || httpBlocked80(binder.Address, httpServices) {
-				continue
-			}
-			for httpHost, httpPaths := range info.Hosts {
-				var paths []string
-				for _, httpPath := range httpPaths {
-					paths = append(paths, httpPath.Path)
-				}
-				addRedirectPaths(binder.Address, httpHost, paths, httpServices)
 			}
 		}
 	}
@@ -674,7 +642,7 @@ func (c *controller) generateConfig() error {
 		td.HTTPService = append(td.HTTPService, srv)
 	}
 
-	for binder, hosts := range tcpServices {
+	for binder, info := range tcpServices {
 		fr := getFrontendRulesForPort(c.Ingress.Spec.FrontendRules, binder.Port)
 		srv := &hpi.TCPService{
 			SharedInfo:    si,
@@ -682,7 +650,9 @@ func (c *controller) generateConfig() error {
 			Address:       binder.Address,
 			Port:          strconv.Itoa(binder.Port),
 			FrontendRules: fr.Rules,
-			Hosts:         hosts,
+			ALPNOptions:   info.ALPNOptions,
+			CertFile:      info.CertFile,
+			Hosts:         info.Hosts,
 		}
 
 		if globalTLS != nil {
@@ -792,7 +762,7 @@ func httpBlocked80(address string, httpServices map[hostBinder]*httpInfo) bool {
 }
 
 // if TCP mode uses port 80, so we can't setup 80 -> 443 redirection
-func tcpBlocked80(address string, tcpServices map[hostBinder][]*hpi.TCPHost) bool {
+func tcpBlocked80(address string, tcpServices map[hostBinder]*tcpInfo) bool {
 	if address == `*` {
 		for b := range tcpServices {
 			if b.Port == 80 {
