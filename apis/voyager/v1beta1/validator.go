@@ -213,7 +213,7 @@ func (r Ingress) IsValid(cloudProvider string) error {
 					return fmt.Errorf("spec.rule[%d].tcp is reusing port %d, also used in spec.rule[%d].http", ri, ea.PodPort, ea.FirstRuleIndex)
 				}
 				if nodePort != ea.NodePort {
-					return fmt.Errorf("spec.rule[%d].tcp.nodePort %d does not match with nodePort %d", ri, ea.NodePort, ea.NodePort)
+					return fmt.Errorf("spec.rule[%d].tcp.nodePort %d does not match with nodePort %d", ri, nodePort, ea.NodePort)
 				} else {
 					nodePorts[nodePort] = ri
 				}

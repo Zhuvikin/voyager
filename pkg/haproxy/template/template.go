@@ -39,9 +39,9 @@ func HeaderName(v string) string {
 
 func HostACLs(host string, port int, nodePort, redirectToPort int32, useNodePort bool) []string {
 	host = strings.TrimSpace(host)
-	if host == "" {
+	/*if host == "" {
 		panic(fmt.Sprintf("found empty host for port %d", port))
-	}
+	}*/
 
 	var conditions []string
 
