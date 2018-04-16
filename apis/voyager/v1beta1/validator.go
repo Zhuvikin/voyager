@@ -238,6 +238,7 @@ func (r Ingress) IsValid(cloudProvider string) error {
 					if ei, found := nodePorts[nodePort]; found {
 						return fmt.Errorf("spec.rule[%d].tcp is reusing nodePort %d for addr %s, also used in spec.rule[%d]", ri, nodePort, a, ei)
 					} else {
+						a.NodePort = nodePort
 						nodePorts[nodePort] = ri
 					}
 				}
