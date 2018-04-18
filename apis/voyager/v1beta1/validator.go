@@ -55,13 +55,13 @@ func (r *Ingress) Migrate() {
 func (r Ingress) IsValid(cloudProvider string) error {
 	for key, fn := range get {
 		if _, err := fn(r.Annotations); err != nil && err != kutil.ErrNotFound {
-			return errors.Errorf("can not parse annotaion %s. Reason: %s", key, err)
+			return errors.Errorf("can not parse annotation %s. Reason: %s", key, err)
 		}
 	}
 
 	timeouts, _ := get[DefaultsTimeOut](r.Annotations)
 	if err := checkMapKeys(timeouts.(map[string]string), sets.StringKeySet(timeoutDefaults)); err != nil {
-		return errors.Errorf("invalid value for annotaion %s. Reason: %s", DefaultsTimeOut, err)
+		return errors.Errorf("invalid value for annotation %s. Reason: %s", DefaultsTimeOut, err)
 	}
 
 	for ri, rule := range r.Spec.FrontendRules {
@@ -335,7 +335,7 @@ func checkBackendServiceName(name string) bool {
 func checkRequiredPort(port intstr.IntOrString) (int, error) {
 	if port.Type == intstr.Int {
 		if port.IntVal <= 0 {
-			return 0, errors.Errorf("port %s must a +ve interger", port)
+			return 0, errors.Errorf("port %s must a +ve integer", port)
 		}
 		return int(port.IntVal), nil
 	} else if port.Type == intstr.String {
@@ -347,7 +347,7 @@ func checkRequiredPort(port intstr.IntOrString) (int, error) {
 func checkOptionalPort(port intstr.IntOrString) (int, error) {
 	if port.Type == intstr.Int {
 		if port.IntVal < 0 {
-			return 0, errors.Errorf("port %s can't be -ve interger", port)
+			return 0, errors.Errorf("port %s can't be -ve integer", port)
 		}
 		return int(port.IntVal), nil
 	} else if port.Type == intstr.String {
@@ -393,11 +393,11 @@ func checkExclusiveWildcard(address string, port int, defined map[string]*addres
 
 func (c Certificate) IsValid(cloudProvider string) error {
 	if len(c.Spec.Domains) == 0 {
-		return errors.Errorf("doamin list is empty")
+		return errors.Errorf("domain list is empty")
 	}
 
 	if c.Spec.ChallengeProvider.HTTP == nil && c.Spec.ChallengeProvider.DNS == nil {
-		return errors.Errorf("certificate has no valid challange provider")
+		return errors.Errorf("certificate has no valid challenge provider")
 	}
 
 	if c.Spec.ChallengeProvider.HTTP != nil && c.Spec.ChallengeProvider.DNS != nil {
