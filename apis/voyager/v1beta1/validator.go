@@ -218,13 +218,16 @@ func (r Ingress) IsValid(cloudProvider string) error {
 					nodePorts[nodePort] = ri
 				}
 
-				_, foundTLS := r.FindTLSSecret(rule.Host)
-				useTLS := foundTLS && !rule.TCP.NoTLS
-				_, foundTLS1 := r.FindTLSSecret(r.Spec.Rules[ea.FirstRuleIndex].Host)
-				useTLS1 := foundTLS1 && !r.Spec.Rules[ea.FirstRuleIndex].TCP.NoTLS
-				if useTLS != useTLS1 {
-					return fmt.Errorf("spec.rule[%d].tcp has conflicting TLS spec with spec.rule[%d].tcp", ri, ea.FirstRuleIndex)
+				// multi-host TCP: NoTLS and FoundTLS should be false for all rules
+				if rule.TCP.NoTLS || r.Spec.Rules[ea.FirstRuleIndex].TCP.NoTLS {
+					return fmt.Errorf("NoTLS found for multi-host tcp")
 				}
+				_, foundTLS := r.FindTLSSecret(rule.Host)
+				_, foundTLS1 := r.FindTLSSecret(r.Spec.Rules[ea.FirstRuleIndex].Host)
+				if foundTLS || foundTLS1 {
+					return fmt.Errorf("spec.TLS found for multi-host tcp")
+				}
+
 				a = ea
 			} else {
 				a = &address{
