@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
-"github.com/tamalsaha/go-oneliners"
+
 	"github.com/appscode/go/log"
 	v1u "github.com/appscode/kutil/core/v1"
 	api "github.com/appscode/voyager/apis/voyager/v1beta1"
@@ -17,6 +17,7 @@ import (
 	"github.com/appscode/voyager/pkg/config"
 	"github.com/appscode/voyager/pkg/eventer"
 	"github.com/pkg/errors"
+	"github.com/tamalsaha/go-oneliners"
 	"github.com/xenolf/lego/acme"
 	core "k8s.io/api/core/v1"
 	extensions "k8s.io/api/extensions/v1beta1"
@@ -161,6 +162,17 @@ func (c *Controller) Process() error {
 				eventer.EventReasonCertificateIssueSuccessful,
 				"Successfully renewed certificate",
 			)
+		} else if err == ErrEmptyCert {
+			err := c.create()
+			if err == nil {
+				c.recorder.Eventf(
+					c.crd.ObjectReference(),
+					core.EventTypeNormal,
+					eventer.EventReasonCertificateIssueSuccessful,
+					"Successfully issued certificate",
+				)
+			}
+			return err
 		}
 		return err
 	}
@@ -243,6 +255,8 @@ func (c *Controller) create() error {
 	return c.store.Save(c.crd, cert)
 }
 
+var ErrEmptyCert = errors.New("empty cert")
+
 func (c *Controller) renew() error {
 	if err := c.getACMEClient(); err != nil {
 		return err
@@ -265,6 +279,10 @@ func (c *Controller) renew() error {
 	}
 	oneliners.FILE("renewed certificate", string(cert.Certificate))
 	oneliners.FILE("renewed certificate private key", string(cert.PrivateKey))
+
+	if len(cert.Certificate) == 0 || len(cert.PrivateKey) == 0 {
+		return ErrEmptyCert
+	}
 	return c.store.Save(c.crd, cert)
 }
 
