@@ -6,6 +6,9 @@ import (
 
 	"github.com/appscode/go/log"
 	hpi "github.com/appscode/voyager/pkg/haproxy/api"
+	"os/exec"
+	"io/ioutil"
+	"github.com/pkg/errors"
 )
 
 func RenderConfig(data hpi.TemplateData) (string, error) {
@@ -28,4 +31,14 @@ func RenderConfig(data hpi.TemplateData) (string, error) {
 		}
 	}
 	return strings.Join(result, "\n"), nil
+}
+
+func CheckRenderedConfig(cfg string) error {
+	if err := ioutil.WriteFile("/tmp/config.cfg", []byte(cfg), 0777); err != nil {
+		return err
+	}
+	if output, err := exec.Command("haproxy", "-c", "-f", "/tmp/config.cfg").CombinedOutput(); err != nil {
+		return errors.Errorf("invalid haproxy configuration, reason: %s, message: %s", err, string(output))
+	}
+	return nil
 }
