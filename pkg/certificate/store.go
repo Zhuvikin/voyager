@@ -6,7 +6,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
-
+	"github.com/tamalsaha/go-oneliners"
 	core_util "github.com/appscode/kutil/core/v1"
 	api "github.com/appscode/voyager/apis/voyager/v1beta1"
 	cs "github.com/appscode/voyager/client/clientset/versioned"
@@ -119,6 +119,7 @@ func (s *CertStore) Save(crd *api.Certificate, cert acme.CertificateResource) er
 				return in
 			})
 		if err != nil {
+			oneliners.FILE("CreateOrPatchSecret", err)
 			return err
 		}
 	}

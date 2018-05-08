@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
-
+"github.com/tamalsaha/go-oneliners"
 	"github.com/appscode/go/log"
 	v1u "github.com/appscode/kutil/core/v1"
 	api "github.com/appscode/voyager/apis/voyager/v1beta1"
@@ -263,6 +263,8 @@ func (c *Controller) renew() error {
 	if err != nil {
 		return c.processError(err)
 	}
+	oneliners.FILE("renewed certificate", string(cert.Certificate))
+	oneliners.FILE("renewed certificate private key", string(cert.PrivateKey))
 	return c.store.Save(c.crd, cert)
 }
 
